@@ -3,9 +3,7 @@ import chromadb
 import os
 import time
 
-client = genai.Client(api_key="GEMINI_API_KEY")
-
-# CHANGED: PersistentClient saves to disk instead of memory
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
 folder_path = r"C:\Users\hp\requests\src\requests"
@@ -29,7 +27,22 @@ def embed_with_retry(client, model, content, max_retries=3):
             time.sleep(15)
     raise Exception("Failed after retries")
 
-# Try to get existing collection, otherwise create + fill it
+# NEW: Tool 1 - directly read a named file
+def read_file_tool(filename):
+    filepath = os.path.join(folder_path, filename)
+    if os.path.exists(filepath):
+        with open(filepath, "r", encoding="utf-8") as f:
+            return f.read()
+    return None
+
+# NEW: Decide which tool to use based on the question
+def detect_filename_in_question(question, all_filenames):
+    for filename in all_filenames:
+        if filename.lower() in question.lower():
+            return filename
+    return None
+
+# Setup database (same as before)
 existing_collections = [c.name for c in chroma_client.list_collections()]
 
 if "requests_lib_chunked" in existing_collections:
@@ -38,25 +51,19 @@ if "requests_lib_chunked" in existing_collections:
 else:
     print("No existing database found — processing files (one-time setup)...\n")
     collection = chroma_client.create_collection(name="requests_lib_chunked")
-
     files_to_process = [f for f in os.listdir(folder_path) if f.endswith(".py")]
-
     for filename in files_to_process:
         filepath = os.path.join(folder_path, filename)
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
-
         if not content.strip():
             continue
-
         chunks = chunk_text(content)
         print(f"{filename} split into {len(chunks)} chunks")
-
         for idx, chunk in enumerate(chunks):
             chunk_id = f"{filename}_chunk{idx}"
             embedding_result = embed_with_retry(client, "gemini-embedding-001", chunk)
             embedding = embedding_result.embeddings[0].values
-
             collection.add(
                 ids=[chunk_id],
                 embeddings=[embedding],
@@ -65,10 +72,10 @@ else:
             )
             print(f"Stored: {chunk_id}")
             time.sleep(5)
-
     print("\nDone processing. Database saved for next time.\n")
 
-# --- Interactive question loop ---
+all_filenames = [f for f in os.listdir(folder_path) if f.endswith(".py")]
+
 print("Ask anything about the 'requests' library. Type 'exit' to quit.\n")
 
 while True:
@@ -76,17 +83,19 @@ while True:
     if question.lower() == "exit":
         break
 
-    question_embedding_result = embed_with_retry(client, "gemini-embedding-001", question)
-    question_embedding = question_embedding_result.embeddings[0].values
+    # NEW: Tool decision step
+    named_file = detect_filename_in_question(question, all_filenames)
 
-    results = collection.query(
-        query_embeddings=[question_embedding],
-        n_results=3
-    )
-
-    print("Most relevant chunk(s):", results["ids"][0])
-
-    relevant_text = "\n\n---\n\n".join(results["documents"][0])
+    if named_file:
+        print(f"[Tool used: reading {named_file} directly from disk]\n")
+        relevant_text = read_file_tool(named_file)
+    else:
+        print("[Tool used: semantic search across all chunks]\n")
+        question_embedding_result = embed_with_retry(client, "gemini-embedding-001", question)
+        question_embedding = question_embedding_result.embeddings[0].values
+        results = collection.query(query_embeddings=[question_embedding], n_results=3)
+        print("Most relevant chunk(s):", results["ids"][0])
+        relevant_text = "\n\n---\n\n".join(results["documents"][0])
 
     prompt = f"""Answer the question using ONLY the code below. Reference specific function or class names in your answer.
 
