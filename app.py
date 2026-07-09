@@ -6,7 +6,7 @@ import chromadb
 import os
 
 app = FastAPI()
-
+print("DEBUG - GEMINI_API_KEY value:", repr(os.environ.get("GEMINI_API_KEY")))
 client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 collection = chroma_client.get_collection(name="requests_lib_chunked")
